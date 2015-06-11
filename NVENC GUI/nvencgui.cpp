@@ -254,6 +254,8 @@ void NVENCGUI::SetOutputFileDirectory()
 void NVENCGUI::Transcode()
 {
 	CUresult result;
+
+	// initialize CUDA
 	result = cuInit(0);
 	if (result != CUDA_SUCCESS)
 	{
@@ -263,31 +265,36 @@ void NVENCGUI::Transcode()
 
 	NVENCSTATUS nvStatus = NV_ENC_SUCCESS;
 
+	// no input file
 	if (encodeConfig.inputFileName == NULL)
 	{
 		emit Error(ERR_INPUT);
 		return;
 	}
 
+	// no output file
 	if (encodeConfig.outputFileName == NULL)
 	{
 		emit Error(ERR_OUTPUT);
 		return;
 	}
 
+	// unable to open input file
 	if (!fopen(encodeConfig.inputFileName, "r"))
 	{
 		emit Error(ERR_INPUT);
 		return;
 	}
+
 	encodeConfig.fOutput = fopen(encodeConfig.outputFileName, "wb");
+	// unable to open output file
 	if (encodeConfig.fOutput == NULL)
 	{
 		emit Error(ERR_OUTPUT);
 		return;
 	}
 
-	//init cuda
+	// initialize CUDA on device and set CUDA context
 	CUcontext cudaCtx;
 	CUdevice device;
 
@@ -304,7 +311,7 @@ void NVENCGUI::Transcode()
 		return;
 	}
 
-
+	// initialize NVCUVID context
 	CUcontext curCtx;
 	CUvideoctxlock ctxLock;
 	result = cuCtxPopCurrent(&curCtx);
@@ -327,11 +334,13 @@ void NVENCGUI::Transcode()
 	int decodedW, decodedH, decodedFRN, decodedFRD;
 	pDecoder->GetCodecParam(&decodedW, &decodedH, &decodedFRN, &decodedFRD);
 
+	// If the width/height is not set, set to same as source
 	if (encodeConfig.width <= 0 || encodeConfig.height <= 0) {
 		encodeConfig.width = decodedW;
 		encodeConfig.height = decodedH;
 	}
 
+	// same, except for fps
 	if (encodeConfig.fps <= 0) {
 		if (decodedFRN <= 0 || decodedFRD <= 0)
 			encodeConfig.fps = 30;
@@ -339,11 +348,13 @@ void NVENCGUI::Transcode()
 			encodeConfig.fps = decodedFRN / decodedFRD;
 	}
 
+	// initialize frame queue with width/height
 	pFrameQueue->init(encodeConfig.width, encodeConfig.height);
 
 	VideoEncoder* pEncoder = new VideoEncoder(ctxLock);
 	assert(pEncoder->GetHWEncoder());
 
+	// initialize NVENC HW Encoder
 	nvStatus = pEncoder->GetHWEncoder()->Initialize(cudaCtx, NV_ENC_DEVICE_TYPE_CUDA);
 	if (nvStatus != NV_ENC_SUCCESS)
 	{
@@ -351,9 +362,10 @@ void NVENCGUI::Transcode()
 		return;
 	}
 
+	// get preset GUID
 	encodeConfig.presetGUID = pEncoder->GetHWEncoder()->GetPresetGUID(encodeConfig.encoderPreset, encodeConfig.codec);
 
-
+	// create encoder
 	nvStatus = pEncoder->GetHWEncoder()->CreateEncoder(&encodeConfig);
 	if (nvStatus != NV_ENC_SUCCESS)
 	{
@@ -361,6 +373,7 @@ void NVENCGUI::Transcode()
 		return;
 	}
 
+	// create buffer
 	nvStatus = pEncoder->AllocateIOBuffers(&encodeConfig);
 	if (nvStatus != NV_ENC_SUCCESS)
 	{
@@ -368,8 +381,8 @@ void NVENCGUI::Transcode()
 		return;
 	}
 
+	// print details to text window, start counter
 	emit PrintDetails();
-
 	NvQueryPerformanceCounter(&results.lStart);
 
 	//start decoding thread
@@ -409,14 +422,17 @@ void NVENCGUI::Transcode()
 		}
 	}
 
+	// flush
 	pEncoder->EncodeFrame(NULL, true);
 
+	// end decoding thread
 #ifdef _WIN32
 	WaitForSingleObject(decodeThread, INFINITE);
 #else
 	pthread_join(pid, NULL);
 #endif
 
+	// print transcoding details
 	if (pEncoder->GetEncodedFrames() > 0)
 	{
 		results.decodedFrames = pDecoder->m_decodedFrames;
@@ -427,8 +443,10 @@ void NVENCGUI::Transcode()
 		results.elapsedTime = (double)(results.lEnd - results.lStart) / (double)results.lFreq;
 	}
 	emit TranscodingEnd();
-	cuvidCtxLockDestroy(ctxLock);
 
+	// clean up
+
+	cuvidCtxLockDestroy(ctxLock);
 	pEncoder->Deinitialize();
 	delete pDecoder;
 	delete pEncoder;
